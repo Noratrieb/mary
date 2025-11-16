@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <sys/wait.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <stddef.h>
 
 typedef enum status
 {
@@ -123,106 +125,91 @@ status parse(char *line, cmdline **head)
     return OK;
 }
 
+char *append_string(char *original_string, void *data, size_t data_len)
+{
+    size_t original_len = original_string ? strlen(original_string) : 0;
+
+    char *new_buf = malloc(original_len + data_len + 1);
+    if (!new_buf)
+    {
+        fprintf(stderr, "failed to allocate buffer\n");
+        exit(1);
+    }
+    if (original_string)
+    {
+        memcpy(new_buf, original_string, original_len);
+    }
+    memcpy(new_buf + original_len, data, data_len);
+    new_buf[original_len + data_len] = '\0';
+    free(original_string);
+
+    return new_buf;
+}
+
 status expand_word(context *ctx, cmdline *word)
 {
     char *output = NULL;
+    char *cursor = word->part;
 
-    char *str = word->part;
-
-    ssize_t dollar_start = -1;
-    for (size_t offset = 0;;)
+    while (*cursor)
     {
-        char c = str[offset];
+        char c = *cursor;
 
-        bool need_finish_copy = !c && output;
-        bool variable_is_over = dollar_start >= 0 && !isalpha(c) && c != '_';
-
-        char *inserting_value = "";
-
-        if (variable_is_over)
+        if (c == '$')
         {
-            // var end
-            str[offset] = '\0';
-            char *referenced_varname = str + dollar_start + 1;
+            // variable reference
+            cursor++;
+            char *name_start = cursor;
+            while (*cursor && isalpha(*cursor))
+            {
+                cursor++;
+            }
 
-            if (strlen(referenced_varname) == 0)
+            ptrdiff_t name_len = cursor - name_start;
+
+            char *name = append_string(NULL, name_start, name_len);
+
+            if (!name_len)
             {
                 fprintf(stderr, "must have variable name after $\n");
                 return ERR;
             }
 
-            varlist *node = ctx->vars;
-            for (; node; node = node->next)
+            varlist *variable = ctx->vars;
+            for (; variable; variable = variable->next)
             {
-                if (strcmp(node->name, referenced_varname) == 0)
+                if (strcmp(variable->name, name) == 0)
                 {
                     break;
                 }
             }
 
-            if (node)
+            char *variable_value;
+            if (variable)
             {
-                inserting_value = node->value;
+                variable_value = variable->value;
             }
-            else if ((inserting_value = getenv(referenced_varname)))
+            else if ((variable_value = getenv(name)))
             {
                 // assigned in condition
             }
             else
             {
-                fprintf(stderr, "error: variable %s was not found\n", referenced_varname);
+                fprintf(stderr, "error: variable %s was not found\n", name);
                 return ERR;
             }
+
+            output = append_string(output, variable_value, strlen(variable_value));
         }
-
-        if (need_finish_copy || variable_is_over)
+        else
         {
-
-            size_t existing_len = output ? strlen(output) : 0;
-
-            str[dollar_start] = '\0';
-            size_t before_len = strlen(str);
-            size_t inserting_value_len = strlen(inserting_value);
-
-            char *new_buf = malloc(existing_len + before_len + inserting_value_len + 1);
-            if (!new_buf)
-            {
-                fprintf(stderr, "failed to allocate buffer\n");
-                return ERR;
-            }
-            if (output)
-            {
-                memcpy(new_buf, output, existing_len);
-            }
-            memcpy(new_buf + existing_len, str, before_len);
-            memcpy(new_buf + existing_len + before_len, inserting_value, inserting_value_len);
-            new_buf[existing_len + before_len + inserting_value_len] = '\0';
-            free(output);
-            output = new_buf;
-
-            str = str + offset;
-            offset = 0;
-            dollar_start = -1;
-        }
-        else if (c == '$')
-        {
-            dollar_start = offset;
-        }
-
-        str[offset] = c; // undo
-        offset++;
-
-        if (!c)
-        {
-            break;
+            output = append_string(output, cursor, 1);
+            cursor++;
         }
     }
 
-    if (output)
-    {
-        free(word->part);
-        word->part = output;
-    }
+    free(word->part);
+    word->part = output;
 
     return OK;
 }
@@ -328,6 +315,7 @@ status builtin_set(context *ctx, cmdline *args)
 
     if (existing)
     {
+        free(existing->value);
         existing->value = strdup(value);
     }
     else
@@ -338,9 +326,6 @@ status builtin_set(context *ctx, cmdline *args)
         node->next = ctx->vars;
         ctx->vars = node;
     }
-
-    (void)name;
-    (void)value;
 
     return OK;
 }
