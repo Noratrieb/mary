@@ -146,6 +146,31 @@ char *append_string(char *original_string, void *data, size_t data_len)
     return new_buf;
 }
 
+char *read_variable(context *ctx, char *name)
+{
+    varlist *variable = ctx->vars;
+    for (; variable; variable = variable->next)
+    {
+        if (strcmp(variable->name, name) == 0)
+        {
+            break;
+        }
+    }
+    if (variable)
+    {
+        return variable->value;
+    } 
+
+    char *envvar = getenv(name);
+    if (envvar)
+    {
+        return envvar;
+    }
+
+    fprintf(stderr, "error: variable %s was not found\n", name);
+    return NULL;
+}
+
 status expand_word(context *ctx, cmdline *word)
 {
     char *output = NULL;
@@ -175,27 +200,9 @@ status expand_word(context *ctx, cmdline *word)
                 return ERR;
             }
 
-            varlist *variable = ctx->vars;
-            for (; variable; variable = variable->next)
+            char *variable_value = read_variable(ctx, name);
+            if (!variable_value)
             {
-                if (strcmp(variable->name, name) == 0)
-                {
-                    break;
-                }
-            }
-
-            char *variable_value;
-            if (variable)
-            {
-                variable_value = variable->value;
-            }
-            else if ((variable_value = getenv(name)))
-            {
-                // assigned in condition
-            }
-            else
-            {
-                fprintf(stderr, "error: variable %s was not found\n", name);
                 return ERR;
             }
 
