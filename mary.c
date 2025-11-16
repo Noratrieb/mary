@@ -160,13 +160,19 @@ status expand_word(context *ctx, cmdline *word)
                 }
             }
 
-            if (!node)
+            if (node)
             {
-                fprintf(stderr, "variable %s was not found\n", referenced_varname);
+                inserting_value = node->value;
+            }
+            else if ((inserting_value = getenv(referenced_varname)))
+            {
+                // assigned in condition
+            }
+            else
+            {
+                fprintf(stderr, "error: variable %s was not found\n", referenced_varname);
                 return ERR;
             }
-
-            inserting_value = node->value;
         }
 
         if (need_finish_copy || variable_is_over)
@@ -184,7 +190,10 @@ status expand_word(context *ctx, cmdline *word)
                 fprintf(stderr, "failed to allocate buffer\n");
                 return ERR;
             }
-            memcpy(new_buf, output, existing_len);
+            if (output)
+            {
+                memcpy(new_buf, output, existing_len);
+            }
             memcpy(new_buf + existing_len, str, before_len);
             memcpy(new_buf + existing_len + before_len, inserting_value, inserting_value_len);
             new_buf[existing_len + before_len + inserting_value_len] = '\0';
@@ -277,13 +286,23 @@ status spawn(cmdline *cmd)
     }
 }
 
+status builtin_exit(context *ctx, cmdline *args)
+{
+    if (args)
+    {
+        fprintf(stderr, "vars: must be called without arguments\n");
+        return ERR;
+    }
+    return EXIT;
+}
+
 status builtin_set(context *ctx, cmdline *args)
 {
     cmdline *name_arg = args;
     if (!name_arg)
     {
         fprintf(stderr, "set: missing variable name\n");
-        return OK;
+        return ERR;
     }
 
     char *name = name_arg->part;
@@ -292,7 +311,7 @@ status builtin_set(context *ctx, cmdline *args)
     if (!value_arg)
     {
         fprintf(stderr, "set: missing variable value\n");
-        return OK;
+        return ERR;
     }
 
     char *value = value_arg->part;
@@ -331,7 +350,7 @@ status builtin_vars(context *ctx, cmdline *args)
     if (args)
     {
         fprintf(stderr, "vars: must be called without arguments\n");
-        return OK;
+        return ERR;
     }
     for (varlist *node = ctx->vars; node; node = node->next)
     {
@@ -347,7 +366,8 @@ status execute(context *ctx, cmdline *cmd)
 
     if (strcmp(prog, "exit") == 0)
     {
-        return EXIT;
+
+        return builtin_exit(ctx, cmd->next);
     }
     else if (strcmp(prog, "set") == 0)
     {

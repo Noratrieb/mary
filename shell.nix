@@ -1,3 +1,3 @@
 { pkgs ? import <nixpkgs> { } }: pkgs.mkShell {
-  nativeBuildInputs = [ pkgs.gnumake ];
+  nativeBuildInputs = [ pkgs.gnumake pkgs.clang ];
 }

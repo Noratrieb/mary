@@ -1,4 +1,5 @@
-CFLAGS=-std=c23 -g -Wall -Wpedantic -fsanitize=address
+CC=clang
+CFLAGS=-std=c23 -g -Wall -Wpedantic -fsanitize=undefined
 
 all: mary
 
