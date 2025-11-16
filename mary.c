@@ -21,16 +21,24 @@ typedef struct options
     bool print_exec;
 } options;
 
-typedef struct context
+typedef struct varlist
 {
-    options opts;
-} context;
+    char *name;
+    char *value;
+    struct varlist *next;
+} varlist;
 
 typedef struct strlist
 {
     char *part;
     struct strlist *next;
 } strlist;
+
+typedef struct context
+{
+    options opts;
+    varlist *vars;
+} context;
 
 typedef strlist cmdline;
 
@@ -40,12 +48,24 @@ status alloc_failure()
     return EXIT;
 }
 
-void free_list(strlist *list)
+void free_strlist(strlist *list)
 {
     for (strlist *node = list; node;)
     {
         free(node->part);
         strlist *next_node = node->next;
+        free(node);
+        node = next_node;
+    }
+}
+
+void free_varlist(varlist *list)
+{
+    for (varlist *node = list; node;)
+    {
+        free(node->name);
+        free(node->value);
+        varlist *next_node = node->next;
         free(node);
         node = next_node;
     }
@@ -105,7 +125,7 @@ status parse(char *line, cmdline **head)
     return OK;
 }
 
-void spawn(cmdline *cmd)
+status spawn(cmdline *cmd)
 {
     int fork_result = fork();
     if (fork_result == -1)
@@ -126,7 +146,7 @@ void spawn(cmdline *cmd)
         if (!argv)
         {
             fprintf(stderr, "failed to allocate memory for spawn\n");
-            return;
+            return EXIT;
         }
         char **argv_cur = argv;
         for (cmdline *node = cmd; node; node = node->next)
@@ -140,17 +160,17 @@ void spawn(cmdline *cmd)
         // we must have failed if we're still here
         perror(cmd->part);
         free(argv);
-        free_list(cmd);
-        exit(1);
+        return EXIT;
     }
     else
     {
         // parent
         wait(&fork_result);
+        return OK;
     }
 }
 
-status builtin_set(cmdline *args)
+status builtin_set(context *ctx, cmdline *args)
 {
     cmdline *name_arg = args;
     if (!name_arg)
@@ -170,8 +190,46 @@ status builtin_set(cmdline *args)
 
     char *value = value_arg->part;
 
+    varlist *existing = NULL;
+    for (varlist *node = ctx->vars; node; node = node->next)
+    {
+        if (strcmp(name, node->name) == 0)
+        {
+            existing = node;
+            break;
+        }
+    }
+
+    if (existing)
+    {
+        existing->value = strdup(value);
+    }
+    else
+    {
+        varlist *node = malloc(sizeof(*node));
+        node->name = strdup(name);
+        node->value = strdup(value);
+        node->next = ctx->vars;
+        ctx->vars = node;
+    }
+
     (void)name;
     (void)value;
+
+    return OK;
+}
+
+status builtin_vars(context *ctx, cmdline *args)
+{
+    if (args)
+    {
+        fprintf(stderr, "vars: must be called without arguments\n");
+        return OK;
+    }
+    for (varlist *node = ctx->vars; node; node = node->next)
+    {
+        printf("%s=%s\n", node->name, node->value);
+    }
 
     return OK;
 }
@@ -186,17 +244,20 @@ status execute(context *ctx, cmdline *cmd)
     }
     else if (strcmp(prog, "set") == 0)
     {
-        return builtin_set(cmd->next);
+        return builtin_set(ctx, cmd->next);
+    }
+    else if (strcmp(prog, "vars") == 0)
+    {
+        return builtin_vars(ctx, cmd->next);
     }
     else
     {
         // spawn the program
-        spawn(cmd);
-        return OK;
+        return spawn(cmd);
     }
 }
 
-status read_line(context *ctx)
+status process_next_line(context *ctx)
 {
     char line[1024];
 
@@ -243,7 +304,7 @@ status read_line(context *ctx)
 
     result = execute(ctx, head);
 
-    free_list(head);
+    free_strlist(head);
 
     if (result == EXIT)
     {
@@ -251,6 +312,24 @@ status read_line(context *ctx)
     }
 
     return OK;
+}
+
+int process(context *ctx)
+{
+    while (true)
+    {
+        char *prompt = "\r$ ";
+
+        int written = write(1, prompt, strlen(prompt));
+        (void)written; // don't care if the prompt was written.
+
+        status result = process_next_line(ctx);
+
+        if (result == EXIT)
+        {
+            return 0;
+        }
+    }
 }
 
 int main()
@@ -263,20 +342,11 @@ int main()
         opts.print_exec = true;
     }
 
-    context ctx = {.opts = opts};
+    context ctx = {.opts = opts, .vars = NULL};
 
-    while (true)
-    {
-        char *prompt = "\r$ ";
+    int status = process(&ctx);
 
-        int written = write(1, prompt, strlen(prompt));
-        (void)written; // don't care if the prompt was written.
+    free_varlist(ctx.vars);
 
-        status result = read_line(&ctx);
-
-        if (result == EXIT)
-        {
-            return 0;
-        }
-    }
+    return status;
 }
