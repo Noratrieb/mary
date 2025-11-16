@@ -5,14 +5,12 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/wait.h>
-
-#ifdef _GNU_SOURCE
-#error yeet
-#endif
+#include <ctype.h>
 
 typedef enum status
 {
     OK,
+    ERR,
     EXIT,
 } status;
 
@@ -119,6 +117,115 @@ status parse(char *line, cmdline **head)
         if (!c)
         {
             break;
+        }
+    }
+
+    return OK;
+}
+
+status expand_word(context *ctx, cmdline *word)
+{
+    char *output = NULL;
+
+    char *str = word->part;
+
+    ssize_t dollar_start = -1;
+    for (size_t offset = 0;;)
+    {
+        char c = str[offset];
+
+        bool need_finish_copy = !c && output;
+        bool variable_is_over = dollar_start >= 0 && !isalpha(c) && c != '_';
+
+        char *inserting_value = "";
+
+        if (variable_is_over)
+        {
+            // var end
+            str[offset] = '\0';
+            char *referenced_varname = str + dollar_start + 1;
+
+            if (strlen(referenced_varname) == 0)
+            {
+                fprintf(stderr, "must have variable name after $\n");
+                return ERR;
+            }
+
+            varlist *node = ctx->vars;
+            for (; node; node = node->next)
+            {
+                if (strcmp(node->name, referenced_varname) == 0)
+                {
+                    break;
+                }
+            }
+
+            if (!node)
+            {
+                fprintf(stderr, "variable %s was not found\n", referenced_varname);
+                return ERR;
+            }
+
+            inserting_value = node->value;
+        }
+
+        if (need_finish_copy || variable_is_over)
+        {
+
+            size_t existing_len = output ? strlen(output) : 0;
+
+            str[dollar_start] = '\0';
+            size_t before_len = strlen(str);
+            size_t inserting_value_len = strlen(inserting_value);
+
+            char *new_buf = malloc(existing_len + before_len + inserting_value_len + 1);
+            if (!new_buf)
+            {
+                fprintf(stderr, "failed to allocate buffer\n");
+                return ERR;
+            }
+            memcpy(new_buf, output, existing_len);
+            memcpy(new_buf + existing_len, str, before_len);
+            memcpy(new_buf + existing_len + before_len, inserting_value, inserting_value_len);
+            new_buf[existing_len + before_len + inserting_value_len] = '\0';
+            free(output);
+            output = new_buf;
+
+            str = str + offset;
+            offset = 0;
+            dollar_start = -1;
+        }
+        else if (c == '$')
+        {
+            dollar_start = offset;
+        }
+
+        str[offset] = c; // undo
+        offset++;
+
+        if (!c)
+        {
+            break;
+        }
+    }
+
+    if (output)
+    {
+        free(word->part);
+        word->part = output;
+    }
+
+    return OK;
+}
+
+status expand(context *ctx, cmdline *cmd)
+{
+    for (cmdline *word = cmd; word; word = word->next)
+    {
+        status result = expand_word(ctx, word);
+        if (result != OK)
+        {
+            return result;
         }
     }
 
@@ -282,14 +389,21 @@ status process_next_line(context *ctx)
 
     cmdline *head = NULL;
     status result = parse(line, &head);
-    if (result == EXIT)
+    if (result != OK)
     {
-        return EXIT;
+        return result;
     }
 
     if (!head)
     {
         return OK;
+    }
+
+    result = expand(ctx, head);
+    if (result != OK)
+    {
+        free_strlist(head);
+        return result;
     }
 
     if (ctx->opts.print_exec)
