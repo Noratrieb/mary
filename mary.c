@@ -152,21 +152,41 @@ status expand_word(context *ctx, cmdline *word) {
         if (c == '$') {
             // variable reference
             cursor++;
-            char *name_start = cursor;
-            while (*cursor && isalpha(*cursor)) {
-                cursor++;
-            }
 
-            ptrdiff_t name_len = cursor - name_start;
+            char *name_start = cursor;
+            ptrdiff_t name_len;
+
+            if (*cursor == '{') {
+                name_start++;
+                while (*cursor && *cursor != '}') {
+                    cursor++;
+                }
+
+                if (*cursor != '}') {
+                    fprintf(stderr, "unclosed ${ in variable reference\n");
+                    return ERR;
+                }
+                name_len = cursor - name_start;
+                cursor++;
+            } else {
+                while (*cursor && isalpha(*cursor)) {
+                    cursor++;
+                }
+                name_len = cursor - name_start;
+            }
 
             char *name = append_string(NULL, name_start, name_len);
 
             if (!name_len) {
+                free(name);
                 fprintf(stderr, "must have variable name after $\n");
                 return ERR;
             }
 
             char *variable_value = read_variable(ctx, name);
+
+            free(name);
+
             if (!variable_value) {
                 return ERR;
             }
