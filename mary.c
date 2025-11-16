@@ -6,41 +6,52 @@
 #include <errno.h>
 #include <sys/wait.h>
 
-typedef enum code
+#ifdef _GNU_SOURCE
+#error yeet
+#endif
+
+typedef enum status
 {
     OK,
     EXIT,
-} code;
+} status;
 
 typedef struct options
 {
     bool print_exec;
 } options;
 
-typedef struct cmdline
+typedef struct context
+{
+    options opts;
+} context;
+
+typedef struct strlist
 {
     char *part;
-    struct cmdline *next;
-} cmdline;
+    struct strlist *next;
+} strlist;
 
-code alloc_failure()
+typedef strlist cmdline;
+
+status alloc_failure()
 {
     fprintf(stderr, "failed to allocate");
     return EXIT;
 }
 
-void print_errno(char *context)
+void free_list(strlist *list)
 {
-    char err[64];
-    int result = strerror_r(errno, err, sizeof(err));
-    if (result < 0)
+    for (strlist *node = list; node;)
     {
-        strcpy(err, "unknown error");
+        free(node->part);
+        strlist *next_node = node->next;
+        free(node);
+        node = next_node;
     }
-    fprintf(stderr, "error: %s: %s\n", context, err);
 }
 
-code parse(char *line, cmdline **head)
+status parse(char *line, cmdline **head)
 {
     cmdline *cur = NULL;
 
@@ -62,8 +73,9 @@ code parse(char *line, cmdline **head)
                 memcpy(part, line + start, len);
                 part[len] = '\0';
 
-                cmdline *new = malloc(sizeof(new));
+                cmdline *new = malloc(sizeof(*new));
                 new->part = part;
+                new->next = NULL;
                 if (cur)
                 {
                     cur->next = new;
@@ -98,17 +110,24 @@ void spawn(cmdline *cmd)
     int fork_result = fork();
     if (fork_result == -1)
     {
-        print_errno("fork()");
+        perror("fork()");
     }
     if (fork_result == 0)
     {
+        // child
         size_t argc = 0;
         for (cmdline *node = cmd; node; node = node->next)
         {
             argc++;
         }
 
-        char **argv = malloc(sizeof(char *) * argc + 1);
+        size_t argc_size = sizeof(char *) * (argc + 1 /*NULL terminator*/);
+        char **argv = malloc(argc_size);
+        if (!argv)
+        {
+            fprintf(stderr, "failed to allocate memory for spawn\n");
+            return;
+        }
         char **argv_cur = argv;
         for (cmdline *node = cmd; node; node = node->next)
         {
@@ -117,9 +136,11 @@ void spawn(cmdline *cmd)
         }
         *argv_cur = NULL;
 
-        // child
-        int fail = execvp(cmd->part, argv);
-        print_errno(cmd->part);
+        execvp(cmd->part, argv);
+        // we must have failed if we're still here
+        perror(cmd->part);
+        free(argv);
+        free_list(cmd);
         exit(1);
     }
     else
@@ -129,7 +150,33 @@ void spawn(cmdline *cmd)
     }
 }
 
-code execute(cmdline *cmd)
+status builtin_set(cmdline *args)
+{
+    cmdline *name_arg = args;
+    if (!name_arg)
+    {
+        fprintf(stderr, "set: missing variable name\n");
+        return OK;
+    }
+
+    char *name = name_arg->part;
+
+    cmdline *value_arg = name_arg->next;
+    if (!value_arg)
+    {
+        fprintf(stderr, "set: missing variable value\n");
+        return OK;
+    }
+
+    char *value = value_arg->part;
+
+    (void)name;
+    (void)value;
+
+    return OK;
+}
+
+status execute(context *ctx, cmdline *cmd)
 {
     char *prog = cmd->part;
 
@@ -137,18 +184,21 @@ code execute(cmdline *cmd)
     {
         return EXIT;
     }
+    else if (strcmp(prog, "set") == 0)
+    {
+        return builtin_set(cmd->next);
+    }
     else
     {
         // spawn the program
         spawn(cmd);
+        return OK;
     }
 }
 
-code read_line(options *opts)
+status read_line(context *ctx)
 {
     char line[1024];
-
-    pid_t p = getpid();
 
     size_t count = read(0, line, sizeof(line));
 
@@ -158,7 +208,7 @@ code read_line(options *opts)
     }
     else if (count < 0)
     {
-        print_errno("reading line");
+        perror("reading line");
         return OK;
     }
     else if (count == sizeof(line))
@@ -170,7 +220,7 @@ code read_line(options *opts)
     line[count] = '\0';
 
     cmdline *head = NULL;
-    code result = parse(line, &head);
+    status result = parse(line, &head);
     if (result == EXIT)
     {
         return EXIT;
@@ -181,7 +231,7 @@ code read_line(options *opts)
         return OK;
     }
 
-    if (opts->print_exec)
+    if (ctx->opts.print_exec)
     {
         printf("+");
         for (cmdline *cur = head; cur; cur = cur->next)
@@ -191,7 +241,10 @@ code read_line(options *opts)
         printf("\n");
     }
 
-    result = execute(head);
+    result = execute(ctx, head);
+
+    free_list(head);
+
     if (result == EXIT)
     {
         return EXIT;
@@ -210,12 +263,17 @@ int main()
         opts.print_exec = true;
     }
 
+    context ctx = {.opts = opts};
+
     while (true)
     {
-        char *prompt = "\r> ";
+        char *prompt = "\r$ ";
 
-        write(1, prompt, strlen(prompt));
-        code result = read_line(&opts);
+        int written = write(1, prompt, strlen(prompt));
+        (void)written; // don't care if the prompt was written.
+
+        status result = read_line(&ctx);
+
         if (result == EXIT)
         {
             return 0;
